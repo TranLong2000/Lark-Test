@@ -15,17 +15,21 @@ const AI_KEY = process.env.AI_Key;
 
 // Webhook Lark Bot
 app.post('/lark-webhook', async (req, res) => {
-  const { token, event } = req.body;
+  const body = req.body;
 
-  // Xác thực token
-  if (token !== VERIFICATION_TOKEN) {
+  // Xử lý URL verification
+  if (body.type === 'url_verification') {
+    return res.json({ challenge: body.challenge });
+  }
+
+  // Xác thực token nếu là event bình thường
+  if (body.token !== VERIFICATION_TOKEN) {
     return res.status(401).send('Invalid token');
   }
 
-  const userMessage = event.text;
+  const userMessage = body.event?.text?.content || '';
 
   try {
-    // Gửi message lên OpenRouter
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
@@ -39,16 +43,18 @@ app.post('/lark-webhook', async (req, res) => {
 
     const aiReply = response.data.choices[0].message.content;
 
-    // Trả về cho Lark
+    // Trả về theo chuẩn Lark
     res.json({
+      status: "success",
       msg_type: "text",
       content: { text: aiReply }
     });
   } catch (err) {
     console.error(err.message);
-    res.status(500).send('Error calling OpenRouter API');
+    res.status(500).json({ status: "error", message: "OpenRouter API error" });
   }
 });
+
 
 // Start server
 const PORT = process.env.PORT || 3000;
