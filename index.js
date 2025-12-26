@@ -45,9 +45,8 @@ function decryptMessage(encrypt) {
 
 // -------------------- WEBHOOK --------------------
 app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
-  // In tất cả headers nhận được để kiểm tra chi tiết
   console.log('All headers:', req.headers);
-  const rawBody = req.body.toString('utf8');  // Convert raw body to UTF-8 string
+  const rawBody = req.body.toString('utf8');
   const signature = req.headers['x-lark-signature'];
   const timestamp = req.headers['x-lark-request-timestamp'];
   const nonce = req.headers['x-lark-request-nonce'];
@@ -55,13 +54,11 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
   console.log("Headers received:", { timestamp, nonce, signature });
   console.log("Raw body:", rawBody);
 
-  // Kiểm tra xem có đủ headers không
   if (!timestamp || !nonce || !signature) {
     console.log("Missing required headers for signature verification");
     return res.status(400).send('Missing headers');
   }
 
-  // Xác thực chữ ký
   if (!verifySignature(timestamp, nonce, rawBody, signature)) {
     console.log("Invalid signature!");
     return res.status(401).send('Invalid signature');
@@ -69,13 +66,12 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   let payload;
   try {
-    payload = JSON.parse(rawBody);  // Parse rawBody thành JSON
+    payload = JSON.parse(rawBody);
   } catch (err) {
     console.error('Cannot parse JSON:', err.message);
     return res.status(400).send('Invalid JSON');
   }
 
-  // Giải mã payload nếu có trường "encrypt"
   const decrypted = payload.encrypt ? decryptMessage(payload.encrypt) : payload;
   if (!decrypted) {
     console.error('Failed to decrypt message');
@@ -84,23 +80,20 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   console.log('Decrypted payload:', decrypted);
 
-  // Kiểm tra nếu là URL verification
   if (decrypted.challenge) {
     console.log("[Webhook] Verification challenge received");
     return res.json({ challenge: decrypted.challenge });
   }
 
-  // Kiểm tra token
   if (decrypted.token && decrypted.token !== VERIFICATION_TOKEN) {
     console.log("Invalid token:", decrypted.token);
     return res.status(401).send('Invalid token');
   }
 
-  const userMessage = decrypted.event?.text?.content || '';  // Lấy tin nhắn từ sự kiện
+  const userMessage = decrypted.event?.text?.content || '';
   console.log('User message:', userMessage);
 
   try {
-    // Gửi yêu cầu tới OpenRouter API
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
@@ -110,14 +103,13 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
       { headers: { 'Authorization': `Bearer ${AI_KEY}` } }
     );
 
-    const aiReply = response.data.choices[0].message.content;  // Lấy phản hồi từ OpenRouter
+    const aiReply = response.data.choices[0].message.content;
     console.log('AI reply:', aiReply);
 
-    // Trả về JSON hợp lệ cho Lark
     res.json({
       status: "success",
       msg_type: "text",
-      content: { text: aiReply }  // Đảm bảo aiReply là chuỗi hợp lệ
+      content: { text: aiReply }
     });
 
   } catch (err) {
