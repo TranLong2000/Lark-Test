@@ -4,7 +4,13 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 
 const app = express();
-app.use(bodyParser.json());
+
+// Giữ nguyên raw body để debug
+app.use(bodyParser.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
 
 // Thông tin từ .env
 const APP_ID = process.env.App_ID;
@@ -15,15 +21,22 @@ const AI_KEY = process.env.AI_Key;
 
 // Webhook Lark Bot
 app.post('/lark-webhook', async (req, res) => {
+  console.log("=== Incoming Lark payload ===");
+  console.log(req.rawBody);  // In payload thô
+  console.log("=== Parsed JSON body ===");
+  console.log(req.body);     // In payload đã parse
+
   const body = req.body;
 
-  // Xử lý URL verification
+  // URL verification
   if (body.type === 'url_verification') {
+    console.log("URL verification request received");
     return res.json({ challenge: body.challenge });
   }
 
-  // Xác thực token nếu là event bình thường
+  // Xác thực token
   if (body.token !== VERIFICATION_TOKEN) {
+    console.log("Invalid token:", body.token);
     return res.status(401).send('Invalid token');
   }
 
@@ -43,18 +56,19 @@ app.post('/lark-webhook', async (req, res) => {
 
     const aiReply = response.data.choices[0].message.content;
 
-    // Trả về theo chuẩn Lark
+    console.log("AI reply:", aiReply);
+
+    // Trả về Lark
     res.json({
       status: "success",
       msg_type: "text",
       content: { text: aiReply }
     });
   } catch (err) {
-    console.error(err.message);
+    console.error("OpenRouter API error:", err.message);
     res.status(500).json({ status: "error", message: "OpenRouter API error" });
   }
 });
-
 
 // Start server
 const PORT = process.env.PORT || 3000;
