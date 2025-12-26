@@ -50,8 +50,8 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
   const timestamp = req.headers['x-lark-request-timestamp'];
   const nonce = req.headers['x-lark-request-nonce'];
 
-  console.log("Headers received:", { timestamp, nonce, signature });
-  console.log("=== Incoming raw body ===");
+  console.log('Headers received:', { timestamp, nonce, signature });
+  console.log('=== Incoming raw body ===');
   console.log(rawBody);
 
   if (!timestamp || !nonce || !signature) {
@@ -66,17 +66,16 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
   try {
     payload = JSON.parse(rawBody);
   } catch (err) {
-    console.error("Cannot parse JSON:", err.message);
+    console.error('Cannot parse JSON:', err.message);
     return res.status(400).send('Invalid JSON');
   }
 
   const decrypted = payload.encrypt ? decryptMessage(payload.encrypt) : payload;
   if (!decrypted) return res.status(400).send('Decrypt failed');
 
-  console.log("=== Decrypted payload ===");
+  console.log('=== Decrypted payload ===');
   console.log(decrypted);
 
-  // Xác thực challenge khi verify url
   if (decrypted.challenge) {
     return res.json({ challenge: decrypted.challenge });
   }
@@ -86,30 +85,30 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
   }
 
   const userMessage = decrypted.event?.text?.content || '';
-  console.log("User message:", userMessage);
+  console.log('User message:', userMessage);
 
   try {
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: userMessage }]
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: userMessage }],
       },
       { headers: { 'Authorization': `Bearer ${AI_KEY}` } }
     );
 
     const aiReply = response.data.choices[0].message.content;
-    console.log("AI reply:", aiReply);
+    console.log('AI reply:', aiReply);
 
     return res.json({
-      status: "success",
-      msg_type: "text",
-      content: { text: aiReply }
+      status: 'success',
+      msg_type: 'text',
+      content: { text: aiReply },
     });
 
   } catch (err) {
-    console.error("OpenRouter API error:", err.message);
-    return res.status(500).json({ status: "error", message: "OpenRouter API error" });
+    console.error('OpenRouter API error:', err.message);
+    return res.status(500).json({ status: 'error', message: 'OpenRouter API error' });
   }
 });
 
