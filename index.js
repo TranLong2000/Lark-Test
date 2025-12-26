@@ -170,7 +170,7 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
         const aiResp = await axios.post(
           'https://openrouter.ai/api/v1/chat/completions',
           {
-            model: 'bytedance-seed/seedream-4.5',
+            model: 'allenai/olmo-3.1-32b-think:free',
             messages: [{ role: 'user', content: text }]
           },
           {
