@@ -1,0 +1,17 @@
+{
+  "name": "lark-openrouter-bot",
+  "version": "1.0.0",
+  "description": "Kết nối Lark Bot với OpenRouter AI",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "body-parser": "^1.20.2"
+  }
+}
