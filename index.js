@@ -9,58 +9,56 @@ const app = express();
 const APP_ID = process.env.App_ID;
 const APP_SECRET = process.env.App_Secret;
 const VERIFICATION_TOKEN = process.env.Verification_Token;
-const ENCRYPT_KEY = process.env.Encrypt_Key.trim();
+const ENCRYPT_KEY = process.env.LARK_ENCRYPT_KEY.trim();
 const AI_KEY = process.env.AI_Key.trim();
-const LARK_DOMAIN = process.env.Lark_Domain?.trim() || 'https://open.larksuite.com/';
+const LARK_DOMAIN = process.env.LARK_DOMAIN || 'https://open.larksuite.com/';
 
-// Hàm xác thực signature Lark bằng HMAC SHA256
+// Hàm xác thực chữ ký Lark bằng SHA256
 function verifySignature(timestamp, nonce, body, signature) {
-  try {
-    const key = Buffer.from(ENCRYPT_KEY, 'base64');
-    const text = `${timestamp}\n${nonce}\n${body}\n`;
-    const hmac = crypto.createHmac('sha256', key);
-    hmac.update(text);
-    const hash = hmac.digest('base64');
-    return hash === signature;
-  } catch (err) {
-    console.error("Signature verify error:", err);
-    return false;
+  const raw = `${timestamp}${nonce}${ENCRYPT_KEY}${body}`;
+  const hash = crypto.createHash('sha256').update(raw, 'utf8').digest('hex');
+  const isValid = hash === signature;
+  
+  if (!isValid) {
+    console.warn("[verifySignature] ❌ Signature mismatch");
+    console.warn("  ↳ Calculated:", hash);
+    console.warn("  ↳ Received:  ", signature);
   }
+
+  return isValid;
 }
 
-// Hàm giải mã message (AES-128-ECB)
+// Hàm giải mã message (AES-256-CBC)
 function decryptMessage(encrypt) {
-  try {
-    const key = Buffer.from(ENCRYPT_KEY, 'base64').slice(0, 16);
-    const decipher = crypto.createDecipheriv('aes-128-ecb', key, null);
-    decipher.setAutoPadding(true);
-    let decrypted = decipher.update(encrypt, 'base64', 'utf8');
-    decrypted += decipher.final('utf8');
-    return JSON.parse(decrypted);
-  } catch (err) {
-    console.error("Decrypt error:", err.message);
-    return null;
-  }
+  const key = Buffer.from(ENCRYPT_KEY, 'utf-8');
+  const aesKey = crypto.createHash('sha256').update(key).digest();
+  const data = Buffer.from(encrypt, 'base64');
+  const iv = data.slice(0, 16);
+  const encryptedText = data.slice(16);
+
+  const decipher = crypto.createDecipheriv('aes-256-cbc', aesKey, iv);
+  let decrypted = decipher.update(encryptedText);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+
+  return JSON.parse(decrypted.toString());
 }
 
 // -------------------- WEBHOOK --------------------
 app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
-  let payload;
   const rawBody = req.body.toString('utf8');
   const signature = req.headers['x-lark-signature'];
   const timestamp = req.headers['x-lark-request-timestamp'];
   const nonce = req.headers['x-lark-request-nonce'];
 
-  console.log('All headers:', req.headers); // In tất cả các headers để kiểm tra
+  console.log("All headers:", req.headers);
   console.log("Raw body:", rawBody);
 
-  // Kiểm tra xem có đủ các headers cần thiết không
+  // Kiểm tra các headers cần thiết
   if (!timestamp || !nonce || !signature) {
     console.log("Missing required headers for signature verification");
     return res.status(400).send('Missing headers');
   }
 
-  // Nếu có trường encrypt, thực hiện xác thực chữ ký
   let isVerified = true;
   if (rawBody.includes('"encrypt"')) {
     isVerified = verifySignature(timestamp, nonce, rawBody, signature);
@@ -68,11 +66,13 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   if (!isVerified) {
     console.error("[Webhook] ❌ Signature verification failed.");
+    return res.status(401).send('Invalid signature');
   }
 
   // ---------- Step 1: Parse JSON ----------
+  let payload;
   try {
-    payload = JSON.parse(rawBody);  // Parse raw body thành JSON
+    payload = JSON.parse(rawBody);
   } catch (err) {
     console.warn("[Webhook] ❌ Cannot parse JSON payload:", err.message);
     return res.sendStatus(400);
@@ -85,7 +85,7 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
       decrypted = decryptMessage(payload.encrypt);  // Giải mã payload nếu có trường "encrypt"
     } catch (err) {
       console.error("[Webhook] ❌ decryptMessage error:", err.message);
-      return res.json({ code: 0 });  // Nếu lỗi giải mã, trả về mã lỗi
+      return res.json({ code: 0 });
     }
   }
 
@@ -105,16 +105,16 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
     console.log(`[Webhook] 🧩 Card Action: ${actionType} | messageId=${messageId} | userId=${userId}`);
 
-    if (actionType === "got_it" && messageId) await addReaction(messageId);  // Thêm reaction nếu có action
+    if (actionType === "got_it" && messageId) await addReaction(messageId);
 
     if (actionType === "approve" && messageId && userId) {
       const userName =
         decrypted?.operator?.user_name ||
         decrypted?.action?.user?.name ||
         "Unknown User";
-    
+
       console.log(`[Webhook] ✅ Approved by ${userName} (${userId})`);
-      return res.json({ code: 0 });  // Trả về mã thành công
+      return res.json({ code: 0 });
     }
 
     return res.json({ code: 0 });
@@ -130,7 +130,7 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
   return res.json({ code: 0 });
 });
 
-// Dummy function to handle AI Webhook (you can implement this accordingly)
+// Dummy function to handle AI Webhook
 async function handleChatAIWebhook(decrypted, res) {
   const userMessage = decrypted.event?.text?.content || '';
   console.log("[AI Webhook] User message:", userMessage);
