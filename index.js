@@ -18,16 +18,8 @@ function verifySignature(timestamp, nonce, body, signature) {
   try {
     const raw = `${timestamp}${nonce}${ENCRYPT_KEY}${body}`;
     const hash = crypto.createHash('sha256').update(raw, 'utf8').digest('hex');
-
-    if (hash !== signature) {
-      console.warn('[verifySignature] ❌ Signature mismatch');
-      console.warn('  ↳ Calculated:', hash);
-      console.warn('  ↳ Received:  ', signature);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error('[verifySignature] Error:', err.message);
+    return hash === signature;
+  } catch {
     return false;
   }
 }
@@ -55,8 +47,7 @@ async function getAppAccessToken() {
     {
       app_id: APP_ID,
       app_secret: APP_SECRET
-    },
-    { timeout: 30000 }
+    }
   );
   return res.data.app_access_token;
 }
@@ -82,8 +73,6 @@ async function replyToLark(messageId, text) {
 
 // ===================== WEBHOOK =====================
 app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
-  let payload;
-
   try {
     const rawBody = req.body.toString('utf8');
 
@@ -91,85 +80,94 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
     const timestamp = req.headers['x-lark-request-timestamp'];
     const nonce = req.headers['x-lark-request-nonce'];
 
-    // ---------- STEP 1: VERIFY SIGNATURE (GIỐNG ĐOẠN 1) ----------
-    let isVerified = true;
-
+    // ---------- VERIFY SIGNATURE ----------
     if (
       rawBody.includes('"encrypt"') &&
       signature &&
       timestamp &&
-      nonce
+      nonce &&
+      !verifySignature(timestamp, nonce, rawBody, signature)
     ) {
-      isVerified = verifySignature(timestamp, nonce, rawBody, signature);
+      console.warn('[Webhook] ⚠️ Signature mismatch – fallback allowed');
     }
 
-    if (!isVerified) {
-      console.warn(
-        '[Webhook] ⚠️ Signature verification failed – fallback allowed'
-      );
-      // ❌ KHÔNG return → cho card / reaction / challenge chạy
-    }
-
-    // ---------- STEP 2: PARSE JSON ----------
+    // ---------- PARSE ----------
+    let payload;
     try {
       payload = JSON.parse(rawBody);
-    } catch (err) {
-      console.warn('[Webhook] ❌ JSON parse error:', err.message);
+    } catch {
       return res.sendStatus(400);
     }
 
-    // ---------- STEP 3: DECRYPT ----------
+    // ---------- DECRYPT ----------
     let decrypted = payload;
     if (payload.encrypt) {
-      try {
-        decrypted = decryptMessage(payload.encrypt);
-      } catch (err) {
-        console.error('[Webhook] ❌ Decrypt error:', err.message);
-        return res.json({ code: 0 });
-      }
+      decrypted = decryptMessage(payload.encrypt);
     }
 
-    console.log('[Webhook] Decrypted:', decrypted);
-
-    // ---------- STEP 4: CHALLENGE ----------
+    // ---------- CHALLENGE ----------
     if (decrypted?.challenge) {
-      console.log('[Webhook] 🔑 Challenge received');
       return res.json({ challenge: decrypted.challenge });
     }
 
-    // ---------- STEP 5: TOKEN VERIFY ----------
+    // ---------- TOKEN ----------
     if (decrypted.token && decrypted.token !== VERIFICATION_TOKEN) {
-      console.warn('[Webhook] ❌ Invalid verification token');
       return res.json({ code: 0 });
     }
 
-    // ---------- STEP 6: CHAT MESSAGE ----------
+    // ---------- MESSAGE ----------
     if (decrypted.header?.event_type === 'im.message.receive_v1') {
-      const messageId = decrypted.event?.message?.message_id;
-      let userMessage = '';
+      const event = decrypted.event;
+      const message = event.message;
 
+      const messageId = message.message_id;
+      const chatType = message.chat_type; // group | p2p
+      const mentions = message.mentions || [];
+
+      let text = '';
       try {
-        userMessage =
-          JSON.parse(decrypted.event?.message?.content || '{}')?.text || '';
+        text = JSON.parse(message.content || '{}')?.text || '';
       } catch {}
 
-      console.log('[User]', userMessage);
+      // ===== CHECK BOT MENTION (DÙNG APP_ID) =====
+      let botMentioned = false;
 
-      // ✅ ACK NGAY cho Lark
+      for (const m of mentions) {
+        if (m.id?.app_id === APP_ID) {
+          botMentioned = true;
+          if (m.key) {
+            text = text.replace(new RegExp(m.key, 'gi'), '');
+          }
+        }
+      }
+
+      // clean leftover <at></at>
+      text = text.replace(/<at.*?<\/at>/g, '').trim();
+
+      // ❌ group mà không mention bot → ignore
+      if (chatType === 'group' && !botMentioned) {
+        return res.json({ code: 0 });
+      }
+
+      console.log('[User]', text);
+
+      // ✅ ACK NGAY
       res.json({ code: 0 });
 
-      // ---------- CALL AI ----------
+      // ---------- CALL OPENROUTER ----------
       try {
         const aiResp = await axios.post(
           'https://openrouter.ai/api/v1/chat/completions',
           {
             model: 'bytedance-seed/seedream-4.5',
-            messages: [{ role: 'user', content: userMessage }]
+            messages: [{ role: 'user', content: text }]
           },
           {
             headers: {
               Authorization: `Bearer ${AI_KEY}`,
-              'Content-Type': 'application/json'
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://yourdomain.com',
+              'X-Title': 'Lark Bot'
             }
           }
         );
@@ -178,11 +176,7 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
           aiResp.data?.choices?.[0]?.message?.content ||
           '⚠️ AI không phản hồi';
 
-        console.log('[AI]', aiReply);
-
-        // ---------- REPLY TO LARK ----------
         await replyToLark(messageId, aiReply);
-
       } catch (err) {
         console.error('[AI Error]', err.response?.data || err.message);
       }
@@ -190,7 +184,6 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
       return;
     }
 
-    // ---------- DEFAULT ACK ----------
     return res.json({ code: 0 });
 
   } catch (err) {
