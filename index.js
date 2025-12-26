@@ -5,18 +5,15 @@ const axios = require('axios');
 
 const app = express();
 
-// ======= Thông tin từ .env =======
-const APP_ID = process.env.App_ID.trim();
-const APP_SECRET = process.env.App_Secret.trim();
-const VERIFICATION_TOKEN = process.env.Verification_Token.trim();
+// Thông tin từ .env
+const APP_ID = process.env.App_ID;
+const APP_SECRET = process.env.App_Secret;
+const VERIFICATION_TOKEN = process.env.Verification_Token;
 const ENCRYPT_KEY = process.env.Encrypt_Key.trim();
 const AI_KEY = process.env.AI_Key.trim();
 const LARK_DOMAIN = process.env.Lark_Domain?.trim() || 'https://open.larksuite.com/';
 
-// ======= Middleware nhận raw body =======
-app.use('/lark-webhook', express.raw({ type: '*/*' }));
-
-// ======= Hàm verify signature =======
+// Hàm xác thực signature Lark bằng HMAC SHA256
 function verifySignature(timestamp, nonce, body, signature) {
   try {
     const key = Buffer.from(ENCRYPT_KEY, 'base64');
@@ -31,7 +28,7 @@ function verifySignature(timestamp, nonce, body, signature) {
   }
 }
 
-// ======= Hàm giải mã message (AES-128-ECB) =======
+// Hàm giải mã message (AES-128-ECB)
 function decryptMessage(encrypt) {
   try {
     const key = Buffer.from(ENCRYPT_KEY, 'base64').slice(0, 16);
@@ -46,93 +43,78 @@ function decryptMessage(encrypt) {
   }
 }
 
-// ======= Webhook xử lý sự kiện Lark =======
-app.post('/lark-webhook', async (req, res) => {
+// -------------------- WEBHOOK --------------------
+app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
+  const rawBody = req.body.toString('utf8');
+  const signature = req.headers['x-lark-signature'];
   const timestamp = req.headers['x-lark-request-timestamp'];
   const nonce = req.headers['x-lark-request-nonce'];
-  const signature = req.headers['x-lark-signature'];
 
-  const rawBody = req.body.toString('utf8');
   console.log("Headers received:", { timestamp, nonce, signature });
-  console.log("Raw body:", rawBody);
+  console.log("=== Incoming raw body ===");
+  console.log(rawBody);
 
-  // Nếu headers không đủ → không verify
   if (!timestamp || !nonce || !signature) {
-    console.log("Missing required headers for signature verification");
-    return res.status(400).send('Missing headers');
+    return res.status(400).send('Missing required headers');
   }
 
-  // Verify chữ ký nếu payload có encrypt
+  if (!verifySignature(timestamp, nonce, rawBody, signature)) {
+    return res.status(401).send('Invalid signature');
+  }
+
   let payload;
   try {
     payload = JSON.parse(rawBody);
   } catch (err) {
-    console.warn("Cannot parse JSON payload:", err.message);
+    console.error("Cannot parse JSON:", err.message);
     return res.status(400).send('Invalid JSON');
   }
 
-  if (payload?.encrypt) {
-    if (!verifySignature(timestamp, nonce, rawBody, signature)) {
-      console.log("Invalid signature!");
-      return res.status(401).send('Invalid signature');
-    }
-  }
+  const decrypted = payload.encrypt ? decryptMessage(payload.encrypt) : payload;
+  if (!decrypted) return res.status(400).send('Decrypt failed');
 
-  // Giải mã nếu cần
-  let decrypted = payload;
-  if (payload?.encrypt) {
-    decrypted = decryptMessage(payload.encrypt);
-    if (!decrypted) return res.status(400).send('Decrypt failed');
-  }
+  console.log("=== Decrypted payload ===");
+  console.log(decrypted);
 
-  console.log("Decrypted payload:", decrypted);
-
-  // URL verification
-  if (decrypted.type === 'url_verification' && decrypted.challenge) {
-    console.log("URL verification challenge received");
+  // Xác thực challenge khi verify url
+  if (decrypted.challenge) {
     return res.json({ challenge: decrypted.challenge });
   }
 
-  // Token verification (nếu có encrypt)
-  if (decrypted.encrypt && decrypted.token !== VERIFICATION_TOKEN) {
-    console.log("Invalid token:", decrypted.token);
+  if (decrypted.token && decrypted.token !== VERIFICATION_TOKEN) {
     return res.status(401).send('Invalid token');
   }
 
-  // Chat AI
-  if (decrypted.header?.event_type === 'im.message.receive_v1') {
-    const userMessage = decrypted.event?.text?.content || '';
-    console.log("User message:", userMessage);
+  const userMessage = decrypted.event?.text?.content || '';
+  console.log("User message:", userMessage);
 
-    try {
-      const response = await axios.post(
-        'https://openrouter.ai/api/v1/chat/completions',
-        {
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: userMessage }]
-        },
-        { headers: { 'Authorization': `Bearer ${AI_KEY}` } }
-      );
+  try {
+    const response = await axios.post(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: userMessage }]
+      },
+      { headers: { 'Authorization': `Bearer ${AI_KEY}` } }
+    );
 
-      const aiReply = response.data.choices[0].message.content;
-      console.log("AI reply:", aiReply);
+    const aiReply = response.data.choices[0].message.content;
+    console.log("AI reply:", aiReply);
 
-      return res.json({
-        status: "success",
-        msg_type: "text",
-        content: { text: aiReply }
-      });
-    } catch (err) {
-      console.error("OpenRouter API error:", err.message);
-      return res.status(500).json({ status: "error", message: "OpenRouter API error" });
-    }
+    return res.json({
+      status: "success",
+      msg_type: "text",
+      content: { text: aiReply }
+    });
+
+  } catch (err) {
+    console.error("OpenRouter API error:", err.message);
+    return res.status(500).json({ status: "error", message: "OpenRouter API error" });
   }
-
-  // Card / Reaction / Other events
-  console.log("Unhandled or non-encrypt event, return code 0");
-  return res.json({ code: 0 });
 });
 
-// ======= Start server =======
+// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
