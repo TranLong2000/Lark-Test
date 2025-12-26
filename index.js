@@ -9,7 +9,7 @@ const app = express();
 // Giữ raw body để debug
 app.use(bodyParser.json({
   verify: (req, res, buf) => {
-    req.rawBody = buf.toString();
+    req.rawBody = buf.toString('utf8'); // Chỉ rõ encoding utf8
   }
 }));
 
@@ -17,23 +17,26 @@ app.use(bodyParser.json({
 const APP_ID = process.env.App_ID;
 const APP_SECRET = process.env.App_Secret;
 const VERIFICATION_TOKEN = process.env.Verification_Token;
-const ENCRYPT_KEY = process.env.Encrypt_Key;
-const AI_KEY = process.env.AI_Key;
+const ENCRYPT_KEY = process.env.Encrypt_Key.trim(); // loại bỏ khoảng trắng thừa
+const AI_KEY = process.env.AI_Key.trim();
 
-// Hàm xác thực signature Lark bằng SHA256
+// Hàm xác thực signature Lark bằng HMAC-SHA256 (chuẩn Lark)
 function verifySignature(timestamp, nonce, body, signature) {
   try {
-    // Chuyển Encrypt_Key từ base64 sang buffer
+    // Chuyển Encrypt_Key từ base64 sang buffer (32 bytes)
     const key = Buffer.from(ENCRYPT_KEY, 'base64');
 
     // Dữ liệu HMAC: timestamp + '\n' + nonce + '\n' + body + '\n'
     const text = `${timestamp}\n${nonce}\n${body}\n`;
 
-    // HMAC-SHA256
+    // HMAC-SHA256 với key là EncodingAESKey (buffer)
     const hmac = crypto.createHmac('sha256', key);
     hmac.update(text);
+
+    // Kết quả base64
     const hash = hmac.digest('base64');
 
+    // So sánh signature từ header với kết quả HMAC
     return hash === signature;
   } catch (err) {
     console.error("Signature verify error:", err);
@@ -41,14 +44,17 @@ function verifySignature(timestamp, nonce, body, signature) {
   }
 }
 
-// Hàm giải mã message (AES-ECB, Base64)
+// Hàm giải mã message (AES-128-ECB, Base64)
 function decryptMessage(encrypt) {
   try {
-    const key = Buffer.from(ENCRYPT_KEY + '=', 'base64'); // Lark EncodingAESKey Base64 + '='
-    const decipher = crypto.createDecipheriv('aes-128-ecb', key.slice(0, 16), '');
+    // Mã hóa Lark dùng AES-128-ECB với key 16 bytes đầu của EncodingAESKey
+    const key = Buffer.from(ENCRYPT_KEY, 'base64').slice(0, 16);
+    const decipher = crypto.createDecipheriv('aes-128-ecb', key, null);
     decipher.setAutoPadding(true);
+
     let decrypted = decipher.update(encrypt, 'base64', 'utf8');
     decrypted += decipher.final('utf8');
+
     return JSON.parse(decrypted);
   } catch (err) {
     console.error("Decrypt error:", err.message);
@@ -64,6 +70,12 @@ app.post('/lark-webhook', async (req, res) => {
 
   console.log("=== Incoming raw body ===");
   console.log(req.rawBody);
+
+  // Kiểm tra đủ header
+  if (!timestamp || !nonce || !signature) {
+    console.log("Missing required headers for signature verification");
+    return res.status(400).send('Missing headers');
+  }
 
   // Xác thực signature
   if (!verifySignature(timestamp, nonce, req.rawBody, signature)) {
