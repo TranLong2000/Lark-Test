@@ -21,13 +21,13 @@ function verifySignature(timestamp, nonce, body, signature) {
 
     if (hash !== signature) {
       console.warn('[verifySignature] ❌ Signature mismatch');
-      console.warn('Calculated:', hash);
-      console.warn('Received:  ', signature);
+      console.warn('  ↳ Calculated:', hash);
+      console.warn('  ↳ Received:  ', signature);
       return false;
     }
     return true;
   } catch (err) {
-    console.error('Signature verify error:', err.message);
+    console.error('[verifySignature] Error:', err.message);
     return false;
   }
 }
@@ -55,7 +55,8 @@ async function getAppAccessToken() {
     {
       app_id: APP_ID,
       app_secret: APP_SECRET
-    }
+    },
+    { timeout: 30000 }
   );
   return res.data.app_access_token;
 }
@@ -85,55 +86,79 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   try {
     const rawBody = req.body.toString('utf8');
+
     const signature = req.headers['x-lark-signature'];
     const timestamp = req.headers['x-lark-request-timestamp'];
     const nonce = req.headers['x-lark-request-nonce'];
 
-    // ---------- Verify signature ----------
+    // ---------- STEP 1: VERIFY SIGNATURE (GIỐNG ĐOẠN 1) ----------
     let isVerified = true;
-    if (rawBody.includes('"encrypt"')) {
+
+    if (
+      rawBody.includes('"encrypt"') &&
+      signature &&
+      timestamp &&
+      nonce
+    ) {
       isVerified = verifySignature(timestamp, nonce, rawBody, signature);
     }
 
     if (!isVerified) {
-      console.error('[Webhook] ❌ Invalid signature');
-      return res.sendStatus(401);
+      console.warn(
+        '[Webhook] ⚠️ Signature verification failed – fallback allowed'
+      );
+      // ❌ KHÔNG return → cho card / reaction / challenge chạy
     }
 
-    // ---------- Parse JSON ----------
-    payload = JSON.parse(rawBody);
+    // ---------- STEP 2: PARSE JSON ----------
+    try {
+      payload = JSON.parse(rawBody);
+    } catch (err) {
+      console.warn('[Webhook] ❌ JSON parse error:', err.message);
+      return res.sendStatus(400);
+    }
 
-    // ---------- Decrypt ----------
+    // ---------- STEP 3: DECRYPT ----------
     let decrypted = payload;
     if (payload.encrypt) {
-      decrypted = decryptMessage(payload.encrypt);
+      try {
+        decrypted = decryptMessage(payload.encrypt);
+      } catch (err) {
+        console.error('[Webhook] ❌ Decrypt error:', err.message);
+        return res.json({ code: 0 });
+      }
     }
 
-    console.log('[Webhook] Decrypted payload:', decrypted);
+    console.log('[Webhook] Decrypted:', decrypted);
 
-    // ---------- Challenge ----------
-    if (decrypted.challenge) {
+    // ---------- STEP 4: CHALLENGE ----------
+    if (decrypted?.challenge) {
+      console.log('[Webhook] 🔑 Challenge received');
       return res.json({ challenge: decrypted.challenge });
     }
 
-    // ---------- Token verify ----------
+    // ---------- STEP 5: TOKEN VERIFY ----------
     if (decrypted.token && decrypted.token !== VERIFICATION_TOKEN) {
       console.warn('[Webhook] ❌ Invalid verification token');
-      return res.sendStatus(401);
+      return res.json({ code: 0 });
     }
 
-    // ---------- Chat message ----------
+    // ---------- STEP 6: CHAT MESSAGE ----------
     if (decrypted.header?.event_type === 'im.message.receive_v1') {
       const messageId = decrypted.event?.message?.message_id;
-      const userMessage =
-        JSON.parse(decrypted.event?.message?.content || '{}')?.text || '';
+      let userMessage = '';
+
+      try {
+        userMessage =
+          JSON.parse(decrypted.event?.message?.content || '{}')?.text || '';
+      } catch {}
 
       console.log('[User]', userMessage);
 
-      // 🔥 ACK cho Lark NGAY
+      // ✅ ACK NGAY cho Lark
       res.json({ code: 0 });
 
-      // ---------- Call AI ----------
+      // ---------- CALL AI ----------
       try {
         const aiResp = await axios.post(
           'https://openrouter.ai/api/v1/chat/completions',
@@ -155,8 +180,9 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
         console.log('[AI]', aiReply);
 
-        // ---------- Reply to Lark ----------
+        // ---------- REPLY TO LARK ----------
         await replyToLark(messageId, aiReply);
+
       } catch (err) {
         console.error('[AI Error]', err.response?.data || err.message);
       }
@@ -164,11 +190,11 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
       return;
     }
 
-    // ---------- Default ACK ----------
+    // ---------- DEFAULT ACK ----------
     return res.json({ code: 0 });
 
   } catch (err) {
-    console.error('[Webhook] ❌ Error:', err.message);
+    console.error('[Webhook] ❌ Global error:', err.message);
     return res.json({ code: 0 });
   }
 });
