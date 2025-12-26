@@ -45,14 +45,14 @@ function decryptMessage(encrypt) {
 
 // -------------------- WEBHOOK --------------------
 app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
+  console.log('All headers:', req.headers);  // In tất cả headers
   const rawBody = req.body.toString('utf8');
   const signature = req.headers['x-lark-signature'];
   const timestamp = req.headers['x-lark-request-timestamp'];
   const nonce = req.headers['x-lark-request-nonce'];
 
-  console.log('Headers received:', { timestamp, nonce, signature });
-  console.log('=== Incoming raw body ===');
-  console.log(rawBody);
+  console.log("Headers received:", { timestamp, nonce, signature });
+  console.log("Raw body:", rawBody);
 
   if (!timestamp || !nonce || !signature) {
     return res.status(400).send('Missing required headers');
@@ -73,8 +73,7 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
   const decrypted = payload.encrypt ? decryptMessage(payload.encrypt) : payload;
   if (!decrypted) return res.status(400).send('Decrypt failed');
 
-  console.log('=== Decrypted payload ===');
-  console.log(decrypted);
+  console.log('Decrypted payload:', decrypted);
 
   if (decrypted.challenge) {
     return res.json({ challenge: decrypted.challenge });
