@@ -1,11 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
+const crypto = require('crypto');
 const axios = require('axios');
 
 const app = express();
 
-// Giữ nguyên raw body để debug
+// Giữ raw body để debug
 app.use(bodyParser.json({
   verify: (req, res, buf) => {
     req.rawBody = buf.toString();
@@ -19,30 +20,57 @@ const VERIFICATION_TOKEN = process.env.Verification_Token;
 const ENCRYPT_KEY = process.env.Encrypt_Key;
 const AI_KEY = process.env.AI_Key;
 
+// Hàm giải mã Lark payload
+function decryptMessage(encrypt) {
+  try {
+    const key = Buffer.from(ENCRYPT_KEY, 'base64');
+    const iv = key.slice(0, 16); // IV lấy 16 byte đầu
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    let decrypted = decipher.update(encrypt, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+    return JSON.parse(decrypted);
+  } catch (err) {
+    console.error("Decrypt error:", err.message);
+    return null;
+  }
+}
+
 // Webhook Lark Bot
 app.post('/lark-webhook', async (req, res) => {
-  console.log("=== Incoming Lark payload ===");
-  console.log(req.rawBody);  // In payload thô
-  console.log("=== Parsed JSON body ===");
-  console.log(req.body);     // In payload đã parse
+  console.log("=== Incoming encrypted payload ===");
+  console.log(req.rawBody);
 
-  const body = req.body;
+  const encrypt = req.body.encrypt;
+  if (!encrypt) {
+    console.log("No encrypt field found");
+    return res.status(400).send('No encrypt field');
+  }
 
-  // URL verification
-  if (body.type === 'url_verification') {
+  const decrypted = decryptMessage(encrypt);
+  if (!decrypted) {
+    return res.status(400).send('Decrypt failed');
+  }
+
+  console.log("=== Decrypted payload ===");
+  console.log(decrypted);
+
+  // Xử lý URL verification
+  if (decrypted.type === 'url_verification') {
     console.log("URL verification request received");
-    return res.json({ challenge: body.challenge });
+    return res.json({ challenge: decrypted.challenge });
   }
 
   // Xác thực token
-  if (body.token !== VERIFICATION_TOKEN) {
-    console.log("Invalid token:", body.token);
+  if (decrypted.token !== VERIFICATION_TOKEN) {
+    console.log("Invalid token:", decrypted.token);
     return res.status(401).send('Invalid token');
   }
 
-  const userMessage = body.event?.text?.content || '';
+  const userMessage = decrypted.event?.text?.content || '';
+  console.log("User message:", userMessage);
 
   try {
+    // Gửi request tới OpenRouter
     const response = await axios.post(
       'https://openrouter.ai/api/v1/chat/completions',
       {
@@ -55,10 +83,9 @@ app.post('/lark-webhook', async (req, res) => {
     );
 
     const aiReply = response.data.choices[0].message.content;
-
     console.log("AI reply:", aiReply);
 
-    // Trả về Lark
+    // Trả về Lark theo chuẩn JSON
     res.json({
       status: "success",
       msg_type: "text",
