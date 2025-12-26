@@ -45,53 +45,95 @@ function decryptMessage(encrypt) {
 
 // -------------------- WEBHOOK --------------------
 app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
-  console.log('All headers:', req.headers);
+  let payload;
   const rawBody = req.body.toString('utf8');
   const signature = req.headers['x-lark-signature'];
   const timestamp = req.headers['x-lark-request-timestamp'];
   const nonce = req.headers['x-lark-request-nonce'];
 
-  console.log("Headers received:", { timestamp, nonce, signature });
+  console.log('All headers:', req.headers); // In tất cả các headers để kiểm tra
   console.log("Raw body:", rawBody);
 
+  // Kiểm tra xem có đủ các headers cần thiết không
   if (!timestamp || !nonce || !signature) {
     console.log("Missing required headers for signature verification");
     return res.status(400).send('Missing headers');
   }
 
-  if (!verifySignature(timestamp, nonce, rawBody, signature)) {
-    console.log("Invalid signature!");
-    return res.status(401).send('Invalid signature');
+  // Nếu có trường encrypt, thực hiện xác thực chữ ký
+  let isVerified = true;
+  if (rawBody.includes('"encrypt"')) {
+    isVerified = verifySignature(timestamp, nonce, rawBody, signature);
   }
 
-  let payload;
+  if (!isVerified) {
+    console.error("[Webhook] ❌ Signature verification failed.");
+  }
+
+  // ---------- Step 1: Parse JSON ----------
   try {
-    payload = JSON.parse(rawBody);
+    payload = JSON.parse(rawBody);  // Parse raw body thành JSON
   } catch (err) {
-    console.error('Cannot parse JSON:', err.message);
-    return res.status(400).send('Invalid JSON');
+    console.warn("[Webhook] ❌ Cannot parse JSON payload:", err.message);
+    return res.sendStatus(400);
   }
 
-  const decrypted = payload.encrypt ? decryptMessage(payload.encrypt) : payload;
-  if (!decrypted) {
-    console.error('Failed to decrypt message');
-    return res.status(400).send('Decrypt failed');
+  // ---------- Step 2: Decrypt if needed ----------
+  let decrypted = payload;
+  if (payload?.encrypt) {
+    try {
+      decrypted = decryptMessage(payload.encrypt);  // Giải mã payload nếu có trường "encrypt"
+    } catch (err) {
+      console.error("[Webhook] ❌ decryptMessage error:", err.message);
+      return res.json({ code: 0 });  // Nếu lỗi giải mã, trả về mã lỗi
+    }
   }
 
-  console.log('Decrypted payload:', decrypted);
+  console.log("Decrypted payload:", decrypted);
 
-  if (decrypted.challenge) {
-    console.log("[Webhook] Verification challenge received");
+  // ---------- Step 3: Verification challenge ----------
+  if (decrypted?.challenge) {
+    console.log("[Webhook] 🔑 Verification challenge received");
     return res.json({ challenge: decrypted.challenge });
   }
 
-  if (decrypted.token && decrypted.token !== VERIFICATION_TOKEN) {
-    console.log("Invalid token:", decrypted.token);
-    return res.status(401).send('Invalid token');
+  // ---------- Step 4: Card / Approve / Reaction ----------
+  if (decrypted?.action || decrypted.header?.event_type === "card.action.trigger") {
+    const messageId = decrypted.open_message_id || decrypted?.action?.value?.message_id;
+    const userId = decrypted.open_id || decrypted?.action?.value?.user_id;
+    const actionType = decrypted?.action?.value?.action || decrypted.header?.event_type;
+
+    console.log(`[Webhook] 🧩 Card Action: ${actionType} | messageId=${messageId} | userId=${userId}`);
+
+    if (actionType === "got_it" && messageId) await addReaction(messageId);  // Thêm reaction nếu có action
+
+    if (actionType === "approve" && messageId && userId) {
+      const userName =
+        decrypted?.operator?.user_name ||
+        decrypted?.action?.user?.name ||
+        "Unknown User";
+    
+      console.log(`[Webhook] ✅ Approved by ${userName} (${userId})`);
+      return res.json({ code: 0 });  // Trả về mã thành công
+    }
+
+    return res.json({ code: 0 });
   }
 
+  // ---------- Step 5: Chat AI ----------
+  if (decrypted.header?.event_type === "im.message.receive_v1") {
+    return await handleChatAIWebhook(decrypted, res);
+  }
+
+  // ---------- Step 6: Unhandled event ----------
+  console.log("[Webhook] ⚙️ Unhandled event type:", decrypted.header?.event_type);
+  return res.json({ code: 0 });
+});
+
+// Dummy function to handle AI Webhook (you can implement this accordingly)
+async function handleChatAIWebhook(decrypted, res) {
   const userMessage = decrypted.event?.text?.content || '';
-  console.log('User message:', userMessage);
+  console.log("[AI Webhook] User message:", userMessage);
 
   try {
     const response = await axios.post(
@@ -106,17 +148,16 @@ app.post('/lark-webhook', express.raw({ type: '*/*' }), async (req, res) => {
     const aiReply = response.data.choices[0].message.content;
     console.log('AI reply:', aiReply);
 
-    res.json({
+    return res.json({
       status: "success",
       msg_type: "text",
       content: { text: aiReply }
     });
-
   } catch (err) {
-    console.error('OpenRouter API error:', err.message);
-    return res.status(500).json({ status: "error", message: "Invalid response from OpenRouter API" });
+    console.error('[AI Webhook] Error:', err.message);
+    return res.status(500).json({ status: "error", message: "Error in AI response" });
   }
-});
+}
 
 // Start server
 const PORT = process.env.PORT || 3000;
