@@ -22,13 +22,24 @@ const AI_KEY = process.env.AI_Key;
 
 // Hàm xác thực signature Lark bằng SHA256
 function verifySignature(timestamp, nonce, body, signature) {
-  const text = `${timestamp}\n${nonce}\n${body}\n`; // chú ý \n cuối
-  const hmac = crypto.createHmac('sha256', ENCRYPT_KEY);
-  hmac.update(text);
-  const hash = hmac.digest('base64');
-  return hash === signature;
-}
+  try {
+    // Chuyển Encrypt_Key từ base64 sang buffer
+    const key = Buffer.from(ENCRYPT_KEY, 'base64');
 
+    // Dữ liệu HMAC: timestamp + '\n' + nonce + '\n' + body + '\n'
+    const text = `${timestamp}\n${nonce}\n${body}\n`;
+
+    // HMAC-SHA256
+    const hmac = crypto.createHmac('sha256', key);
+    hmac.update(text);
+    const hash = hmac.digest('base64');
+
+    return hash === signature;
+  } catch (err) {
+    console.error("Signature verify error:", err);
+    return false;
+  }
+}
 
 // Hàm giải mã message (AES-ECB, Base64)
 function decryptMessage(encrypt) {
